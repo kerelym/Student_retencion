@@ -196,12 +196,3 @@ main              ← versión estable, lista para producción
 
 ---
 
-## 👥 Contribuidores
-
-Proyecto desarrollado como parte del curso de **Ingeniería de Datos** — ciclo académico 2025.
-
----
-
-## 📄 Licencia
-
-MIT License — libre para uso académico y educativo.
