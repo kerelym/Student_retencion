@@ -1,0 +1,388 @@
+"""
+Fase 4: Aplicación Web — Sistema de Retención Estudiantil
+Interfaz interactiva con Streamlit para coordinadores académicos.
+
+Uso:
+    streamlit run app/streamlit_app.py
+"""
+
+import sys
+import json
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import streamlit as st
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+# Rutas relativas al proyecto
+APP_DIR = Path(__file__).parent
+ROOT = APP_DIR.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from predictor import load_artifacts, predict_single, predict_batch
+
+# ──────────────────────────────────────────────
+# Configuración de página
+# ──────────────────────────────────────────────
+st.set_page_config(
+    page_title="Sistema de Retención Estudiantil",
+    page_icon="🎓",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ──────────────────────────────────────────────
+# CSS personalizado
+# ──────────────────────────────────────────────
+st.markdown("""
+<style>
+    .main-title {
+        font-size: 2.2rem; font-weight: 800; color: #1a1a2e;
+        border-bottom: 4px solid #e74c3c; padding-bottom: 10px;
+    }
+    .metric-card {
+        background: #f8f9fa; border-radius: 12px; padding: 20px;
+        border-left: 5px solid #3498db; margin: 8px 0;
+    }
+    .risk-alto {
+        background: #fdf2f2; border-left: 5px solid #e74c3c;
+        border-radius: 8px; padding: 15px; margin: 10px 0;
+    }
+    .risk-medio {
+        background: #fef9e7; border-left: 5px solid #f39c12;
+        border-radius: 8px; padding: 15px; margin: 10px 0;
+    }
+    .risk-bajo {
+        background: #eafaf1; border-left: 5px solid #2ecc71;
+        border-radius: 8px; padding: 15px; margin: 10px 0;
+    }
+    .section-header {
+        font-size: 1.3rem; font-weight: 700; color: #2c3e50;
+        margin-top: 20px; margin-bottom: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────
+# Carga de artefactos ML (cacheado)
+# ──────────────────────────────────────────────
+@st.cache_resource
+def get_model():
+    try:
+        return load_artifacts(ROOT / "models")
+    except FileNotFoundError:
+        return None, None, {}
+
+
+model, feature_names, metrics = get_model()
+
+
+# ──────────────────────────────────────────────
+# Sidebar: información del modelo
+# ──────────────────────────────────────────────
+with st.sidebar:
+    st.image("https://img.icons8.com/color/96/000000/graduation-cap.png", width=70)
+    st.markdown("## 🎓 Retención Estudiantil")
+    st.markdown("**Sistema de alerta temprana** basado en Machine Learning.")
+    st.markdown("---")
+
+    if metrics:
+        st.markdown("### 📊 Rendimiento del Modelo")
+        st.metric("Modelo", metrics.get("model_name", "N/A"))
+        st.metric("ROC-AUC", f"{metrics.get('roc_auc', 0):.3f}")
+        st.metric("F1-Score (Riesgo)", f"{metrics.get('f1_risk', 0):.3f}")
+        st.metric("Recall (Riesgo)", f"{metrics.get('recall_risk', 0):.3f}")
+        st.markdown(f"*CV F1-macro: {metrics.get('cv_f1_macro_mean', 0):.3f} ± {metrics.get('cv_f1_macro_std', 0):.3f}*")
+    else:
+        st.warning("⚠️ Modelo no encontrado.\nEjecuta `python src/train_pipeline.py`")
+
+    st.markdown("---")
+    st.markdown("### ℹ️ Acerca del Dataset")
+    st.markdown("""
+    - **Dataset**: Student Performance (UCI)
+    - **Registros**: 395 estudiantes
+    - **Target**: G3 < 10 → En Riesgo
+    - **Features**: 33 variables académicas y sociales
+    """)
+    st.markdown("---")
+    st.markdown("*Proyecto académico — Ingeniería de Datos*")
+
+
+# ──────────────────────────────────────────────
+# Header principal
+# ──────────────────────────────────────────────
+st.markdown('<p class="main-title">🎓 Sistema Predictivo de Retención Estudiantil</p>',
+            unsafe_allow_html=True)
+st.markdown("Detecta estudiantes en riesgo académico **antes** de que sea demasiado tarde.")
+
+if model is None:
+    st.error("❌ Modelo no cargado. Ejecuta primero `python src/train_pipeline.py`.")
+    st.stop()
+
+# ──────────────────────────────────────────────
+# Tabs principales
+# ──────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs([
+    "🔍 Predicción Individual",
+    "📁 Predicción Masiva (CSV)",
+    "📊 Análisis Exploratorio",
+])
+
+
+# ══════════════════════════════════════════════
+# TAB 1: PREDICCIÓN INDIVIDUAL
+# ══════════════════════════════════════════════
+with tab1:
+    st.markdown("### Ingresa los datos del estudiante")
+    st.markdown("Completa el formulario para obtener la predicción de riesgo en tiempo real.")
+
+    with st.form("student_form"):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown("**📚 Datos Académicos**")
+            G1 = st.slider("Nota 1er Trimestre (G1)", 0, 20, 10)
+            G2 = st.slider("Nota 2do Trimestre (G2)", 0, 20, 10)
+            failures = st.selectbox("Materias Reprobadas", [0, 1, 2, 3], index=0)
+            studytime = st.selectbox("Tiempo de Estudio",
+                                     [1, 2, 3, 4],
+                                     format_func=lambda x: {
+                                         1: "1 - < 2 horas",
+                                         2: "2 - 2 a 5 horas",
+                                         3: "3 - 5 a 10 horas",
+                                         4: "4 - > 10 horas",
+                                     }[x])
+            absences = st.number_input("Número de Ausencias", 0, 93, 4)
+
+        with col2:
+            st.markdown("**👨‍👩‍👧 Datos Familiares**")
+            Medu = st.selectbox("Educación Madre",
+                                [0, 1, 2, 3, 4],
+                                format_func=lambda x: {
+                                    0: "0 - Sin educación",
+                                    1: "1 - Primaria (4to)",
+                                    2: "2 - Primaria (9no)",
+                                    3: "3 - Secundaria",
+                                    4: "4 - Superior",
+                                }[x], index=2)
+            Fedu = st.selectbox("Educación Padre",
+                                [0, 1, 2, 3, 4],
+                                format_func=lambda x: {
+                                    0: "0 - Sin educación",
+                                    1: "1 - Primaria (4to)",
+                                    2: "2 - Primaria (9no)",
+                                    3: "3 - Secundaria",
+                                    4: "4 - Superior",
+                                }[x], index=2)
+            famrel = st.slider("Calidad Relaciones Familiares (1-5)", 1, 5, 4)
+            Pstatus = st.radio("Estado de los Padres", ["T (Juntos)", "A (Separados)"])
+            internet = st.radio("Acceso a Internet en Casa", ["yes", "no"])
+            higher = st.radio("Desea Educación Superior", ["yes", "no"])
+
+        with col3:
+            st.markdown("**🌍 Contexto Social**")
+            sex = st.radio("Sexo", ["F", "M"])
+            age = st.slider("Edad", 15, 22, 17)
+            address = st.radio("Tipo de Residencia", ["U (Urbana)", "R (Rural)"])
+            goout = st.slider("Frecuencia de Salidas (1-5)", 1, 5, 3)
+            freetime = st.slider("Tiempo Libre (1-5)", 1, 5, 3)
+            health = st.slider("Estado de Salud (1-5)", 1, 5, 3)
+            schoolsup = st.radio("Apoyo Escolar Extra", ["yes", "no"])
+            famsup = st.radio("Apoyo Familiar Extra", ["yes", "no"])
+
+        submitted = st.form_submit_button("🔮 Predecir Riesgo", use_container_width=True)
+
+    if submitted:
+        student_data = {
+            "age": age,
+            "Medu": Medu,
+            "Fedu": Fedu,
+            "traveltime": 2,
+            "studytime": studytime,
+            "failures": failures,
+            "famrel": famrel,
+            "freetime": freetime,
+            "goout": goout,
+            "Dalc": 1,
+            "Walc": 1,
+            "health": health,
+            "absences": absences,
+            "G1": G1,
+            "G2": G2,
+            "schoolsup": schoolsup,
+            "famsup": famsup,
+            "paid": "no",
+            "activities": "no",
+            "nursery": "yes",
+            "higher": higher,
+            "internet": internet,
+            "romantic": "no",
+            "school": "GP",
+            "sex": sex,
+            "address": address.split()[0],
+            "famsize": "GT3",
+            "Pstatus": Pstatus.split()[0],
+            "Mjob": "other",
+            "Fjob": "other",
+            "reason": "course",
+            "guardian": "mother",
+        }
+
+        result = predict_single(student_data, model, feature_names)
+
+        st.markdown("---")
+        st.markdown("### 🎯 Resultado de la Predicción")
+
+        col_res1, col_res2, col_res3 = st.columns(3)
+        with col_res1:
+            color = "🔴" if result["at_risk"] else "🟢"
+            st.metric("Estado", f"{color} {'EN RIESGO' if result['at_risk'] else 'SIN RIESGO'}")
+        with col_res2:
+            st.metric("Probabilidad de Riesgo", f"{result['probability_pct']}%")
+        with col_res3:
+            st.metric("Nivel de Riesgo", result["risk_level"])
+
+        # Barra de probabilidad
+        prob = result["probability"]
+        fig, ax = plt.subplots(figsize=(8, 1.2))
+        ax.barh([""], [prob], color="#e74c3c" if prob > 0.5 else "#2ecc71",
+                height=0.5, edgecolor="white")
+        ax.barh([""], [1 - prob], left=[prob], color="#ecf0f1", height=0.5, edgecolor="white")
+        ax.set_xlim(0, 1)
+        ax.axvline(0.5, color="gray", linestyle="--", alpha=0.7)
+        ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+        ax.set_xticklabels(["0%", "25%", "50%", "75%", "100%"])
+        ax.set_title(f"Probabilidad de riesgo: {result['probability_pct']}%", fontsize=11)
+        ax.set_yticks([])
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close()
+
+        # Recomendación
+        css_class = f"risk-{result['risk_level'].lower()}"
+        st.markdown(
+            f'<div class="{css_class}"><strong>Recomendación:</strong><br>{result["recommendation"]}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ══════════════════════════════════════════════
+# TAB 2: PREDICCIÓN MASIVA
+# ══════════════════════════════════════════════
+with tab2:
+    st.markdown("### Carga masiva de estudiantes")
+    st.markdown("""
+    Sube un archivo CSV con los datos de múltiples estudiantes.
+    El sistema retornará las predicciones de riesgo para cada uno.
+    """)
+
+    st.info("""
+    **Formato esperado:** El CSV debe tener las mismas columnas que el dataset original
+    (school, sex, age, address, famsize, Pstatus, Medu, Fedu, Mjob, Fjob, reason,
+    guardian, traveltime, studytime, failures, schoolsup, famsup, paid, activities,
+    nursery, higher, internet, romantic, famrel, freetime, goout, Dalc, Walc, health,
+    absences, G1, G2).
+    """)
+
+    uploaded = st.file_uploader("📂 Sube tu CSV", type=["csv"])
+
+    if uploaded:
+        df_input = pd.read_csv(uploaded)
+        st.success(f"✅ Archivo cargado: {len(df_input)} estudiantes")
+        st.dataframe(df_input.head(), use_container_width=True)
+
+        if st.button("🔮 Generar Predicciones", use_container_width=True):
+            with st.spinner("Procesando predicciones..."):
+                df_results = predict_batch(df_input, model, feature_names)
+
+            st.markdown("### 📋 Resultados")
+
+            # Resumen ejecutivo
+            total = len(df_results)
+            en_riesgo = df_results["at_risk"].sum()
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1:
+                st.metric("Total Estudiantes", total)
+            with col_s2:
+                st.metric("En Riesgo 🔴", int(en_riesgo))
+            with col_s3:
+                st.metric("Sin Riesgo 🟢", int(total - en_riesgo))
+
+            # Tabla de resultados
+            display_cols = [c for c in df_results.columns
+                            if c in ["G1", "G2", "absences", "failures",
+                                     "studytime", "probability_pct",
+                                     "risk_level", "recommendation", "at_risk"]]
+            st.dataframe(
+                df_results[display_cols].style.applymap(
+                    lambda v: "background-color: #fdf2f2" if v is True else
+                              ("background-color: #eafaf1" if v is False else ""),
+                    subset=["at_risk"],
+                ),
+                use_container_width=True,
+            )
+
+            # Descarga
+            csv_out = df_results.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇️ Descargar Resultados CSV",
+                data=csv_out,
+                file_name="predicciones_riesgo.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+
+# ══════════════════════════════════════════════
+# TAB 3: EDA - VISUALIZACIONES
+# ══════════════════════════════════════════════
+with tab3:
+    st.markdown("### 📊 Análisis Exploratorio de Datos")
+    plots_dir = ROOT / "notebooks" / "eda_plots"
+    ml_plots_dir = ROOT / "notebooks" / "ml_plots"
+
+    plot_files = {
+        "Distribución de Riesgo": plots_dir / "01_target_distribution.png",
+        "Notas por Trimestre": plots_dir / "02_grades_vs_risk.png",
+        "Ausencias vs Riesgo": plots_dir / "03_absences_vs_risk.png",
+        "Factores Socioeconómicos": plots_dir / "04_socioeconomic_factors.png",
+        "Correlaciones con Riesgo": plots_dir / "05_correlation_heatmap.png",
+        "Hábitos de Estudio": plots_dir / "06_study_habits.png",
+        "Comparativa de Modelos": ml_plots_dir / "model_comparison.png",
+        "Importancia de Variables (RF)": ml_plots_dir / "feature_importance_rf.png",
+        "Evaluación Regresión Logística": ml_plots_dir / "eval_regresión_logística.png",
+        "Evaluación Random Forest": ml_plots_dir / "eval_random_forest.png",
+    }
+
+    selected = st.selectbox("Selecciona una visualización:", list(plot_files.keys()))
+    plot_path = plot_files[selected]
+
+    if plot_path.exists():
+        st.image(str(plot_path), use_container_width=True)
+        st.markdown(f"*Archivo: `{plot_path.name}`*")
+    else:
+        st.warning(f"Gráfico no encontrado: `{plot_path.name}`\n"
+                   "Ejecuta primero `python src/train_pipeline.py`.")
+
+    # Hallazgos clave
+    st.markdown("---")
+    st.markdown("### 💡 Hallazgos Clave del EDA")
+    findings = [
+        ("📈 Notas previas (G1, G2)", "Son los predictores más fuertes del rendimiento final. "
+         "G2 tiene correlación > 0.90 con G3."),
+        ("📅 Ausencias", "Los estudiantes en riesgo tienen en promedio 2x más ausencias. "
+         "El umbral crítico está alrededor de 10 ausencias."),
+        ("🎓 Educación parental", "Mayor nivel educativo de los padres reduce el riesgo "
+         "hasta en un 30%. La educación de la madre tiene mayor peso."),
+        ("❌ Reprobaciones previas", "Haber reprobado ≥1 materia eleva el riesgo de "
+         "deserción en más del 70%."),
+        ("📖 Tiempo de estudio", "Los estudiantes que estudian < 2 horas semanales "
+         "tienen una tasa de riesgo 40% mayor."),
+        ("🌐 Acceso a internet", "El acceso a internet en casa se asocia a mejores "
+         "resultados académicos."),
+    ]
+    for icon_title, desc in findings:
+        st.markdown(f"**{icon_title}**: {desc}")

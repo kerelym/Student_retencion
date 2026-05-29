@@ -1,0 +1,117 @@
+"""
+Fase 1: ETL y Limpieza de Datos
+Módulo para carga, transformación y limpieza del dataset estudiantil.
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+
+
+# ──────────────────────────────────────────────
+# Constantes de configuración
+# ──────────────────────────────────────────────
+CATEGORICAL_COLS = [
+    "school", "sex", "address", "famsize", "Pstatus",
+    "Mjob", "Fjob", "reason", "guardian",
+    "schoolsup", "famsup", "paid", "activities",
+    "nursery", "higher", "internet", "romantic",
+]
+
+BINARY_MAP = {"yes": 1, "no": 0}
+RISK_THRESHOLD = 10  # G3 < 10  → en riesgo (escala 0-20)
+
+
+# ──────────────────────────────────────────────
+# Funciones principales
+# ──────────────────────────────────────────────
+
+def load_raw(path: str | Path) -> pd.DataFrame:
+    """Carga el CSV crudo y devuelve un DataFrame."""
+    df = pd.read_csv(path)
+    print(f"[ETL] Dataset cargado: {df.shape[0]} filas × {df.shape[1]} columnas")
+    return df
+
+
+def report_quality(df: pd.DataFrame) -> dict:
+    """Genera un reporte de calidad de datos."""
+    report = {
+        "total_rows": len(df),
+        "total_cols": len(df.columns),
+        "missing_values": int(df.isnull().sum().sum()),
+        "duplicate_rows": int(df.duplicated().sum()),
+        "outlier_absences": int((df["absences"] > df["absences"].quantile(0.99)).sum()),
+    }
+    print("[ETL] Reporte de calidad:", report)
+    return report
+
+
+def clean(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pipeline de limpieza:
+    1. Elimina duplicados
+    2. Imputa nulos (no hay en este dataset, pero el pipeline es robusto)
+    3. Codifica variables binarias yes/no
+    4. Ordena columnas numéricas vs categóricas
+    5. Crea variable objetivo `at_risk`
+    6. Detecta y winsoriza outliers en `absences`
+    """
+    df = df.copy()
+
+    # 1. Duplicados
+    before = len(df)
+    df = df.drop_duplicates()
+    print(f"[ETL] Duplicados eliminados: {before - len(df)}")
+
+    # 2. Imputación de nulos
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    cat_cols = df.select_dtypes(include=["object"]).columns
+    df[num_cols] = df[num_cols].fillna(df[num_cols].median())
+    df[cat_cols] = df[cat_cols].fillna(df[cat_cols].mode().iloc[0])
+
+    # 3. Codificación binaria yes/no
+    bool_cols = [c for c in cat_cols if df[c].dropna().isin(["yes", "no"]).all()]
+    for col in bool_cols:
+        df[col] = df[col].map(BINARY_MAP)
+
+    # 4. Winsorización de ausencias (outliers extremos)
+    q99 = df["absences"].quantile(0.99)
+    df["absences"] = df["absences"].clip(upper=q99)
+
+    # 5. Variable objetivo
+    df["at_risk"] = (df["G3"] < RISK_THRESHOLD).astype(int)
+    print(f"[ETL] Estudiantes en riesgo: {df['at_risk'].sum()} / {len(df)} "
+          f"({df['at_risk'].mean()*100:.1f}%)")
+
+    return df
+
+
+def encode_categoricals(df: pd.DataFrame) -> pd.DataFrame:
+    """One-Hot Encoding para las columnas categóricas restantes."""
+    remaining_cat = df.select_dtypes(include=["object"]).columns.tolist()
+    if remaining_cat:
+        df = pd.get_dummies(df, columns=remaining_cat, drop_first=True)
+        print(f"[ETL] OHE aplicado a: {remaining_cat}")
+    return df
+
+
+def run_pipeline(path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Ejecuta el pipeline ETL completo.
+    Devuelve (df_clean_raw, df_encoded) — el primero conserva legibilidad
+    para EDA, el segundo está listo para ML.
+    """
+    df_raw = load_raw(path)
+    report_quality(df_raw)
+    df_clean = clean(df_raw)
+    df_encoded = encode_categoricals(df_clean.copy())
+    print(f"[ETL] Pipeline completo. Features finales: {df_encoded.shape[1]}")
+    return df_clean, df_encoded
+
+
+if __name__ == "__main__":
+    base = Path(__file__).parent.parent
+    df_clean, df_enc = run_pipeline(base / "data" / "student_data.csv")
+    df_clean.to_csv(base / "data" / "student_clean.csv", index=False)
+    df_enc.to_csv(base / "data" / "student_encoded.csv", index=False)
+    print("[ETL] Archivos guardados.")
